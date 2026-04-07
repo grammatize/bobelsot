@@ -65,6 +65,40 @@ const commands = {
         format: 'leaderboard',
         category: 'Levels'
     },
+
+    // Invite Tracker
+    'invites': {
+        description: 'Check how many members a user has invited. Defaults to yourself.',
+        format: 'invites [@user]',
+        category: 'Tracker'
+    },
+    'invitelb': {
+        description: 'Top 10 invite leaderboard for the server.',
+        format: 'invitelb',
+        category: 'Tracker'
+    },
+    'resetinvites': {
+        description: 'Reset invite count for a user or everyone. (Owner only)',
+        format: 'resetinvites @user | resetinvites all',
+        category: 'Tracker'
+    },
+
+    // Message Tracker
+    'messages': {
+        description: 'Check how many messages a user has sent. Defaults to yourself.',
+        format: 'messages [@user]',
+        category: 'Tracker'
+    },
+    'msglb': {
+        description: 'Top 10 message leaderboard for the server.',
+        format: 'msglb',
+        category: 'Tracker'
+    },
+    'resetmsgs': {
+        description: 'Reset message count for a user or everyone. (Owner only)',
+        format: 'resetmsgs @user | resetmsgs all',
+        category: 'Tracker'
+    },
     'timeout': {
         description: 'Timeouts a user for a specified duration.',
         format: 'timeout @user [duration] [reason]',
