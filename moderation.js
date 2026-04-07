@@ -7,9 +7,6 @@ const warnings = new Map();
 function loadWarnings() {
     try {
         if (!fs.existsSync('./warnings.json')) {
-            if (!fs.existsSync('./data')) {
-                fs.mkdirSync('./data');
-            }
             fs.writeFileSync('./warnings.json', '{}');
             return;
         }
@@ -167,31 +164,51 @@ async function nuke(message) {
 
 async function lock(message) {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        return message.reply("You don't have permission to manage channels.");
+        return message.reply("❌ You need `Manage Channels` permission to do that.");
+    }
+    if (!message.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        return message.reply("❌ I need `Manage Channels` permission to lock channels.");
     }
     try {
         await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
-            SendMessages: false
+            SendMessages: false,
+            SendMessagesInThreads: false,
+            AddReactions: false,
         });
-        await message.reply("🔒 Channel locked.");
+        const embed = new EmbedBuilder()
+            .setTitle("🔒 Channel Locked")
+            .setDescription(`This channel has been locked by ${message.author}.`)
+            .setColor("#FF0000")
+            .setTimestamp();
+        await message.channel.send({ embeds: [embed] });
     } catch (error) {
         console.error('Error locking channel:', error);
-        await message.reply('Failed to lock the channel.');
+        await message.reply(`Failed to lock the channel: \`${error.message}\``);
     }
 }
 
 async function unlock(message) {
     if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        return message.reply("You don't have permission to manage channels.");
+        return message.reply("❌ You need `Manage Channels` permission to do that.");
+    }
+    if (!message.guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        return message.reply("❌ I need `Manage Channels` permission to unlock channels.");
     }
     try {
         await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
-            SendMessages: null
+            SendMessages: null,
+            SendMessagesInThreads: null,
+            AddReactions: null,
         });
-        await message.reply("🔓 Channel unlocked.");
+        const embed = new EmbedBuilder()
+            .setTitle("🔓 Channel Unlocked")
+            .setDescription(`This channel has been unlocked by ${message.author}.`)
+            .setColor("#00FF00")
+            .setTimestamp();
+        await message.channel.send({ embeds: [embed] });
     } catch (error) {
         console.error('Error unlocking channel:', error);
-        await message.reply('Failed to unlock the channel.');
+        await message.reply(`Failed to unlock the channel: \`${error.message}\``);
     }
 }
 
