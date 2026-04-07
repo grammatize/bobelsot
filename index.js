@@ -360,6 +360,29 @@ const dataPath = {
     tagRoles: path.join(__dirname, "tagRoles.json"),
 };
 
+// ==================== INVITE & MESSAGE TRACKER ====================
+const TRACKER_FILES = {
+    invites: path.join(__dirname, 'inviteTracker.json'),
+    messages: path.join(__dirname, 'messageTracker.json'),
+};
+
+function loadTrackerData(file) {
+    try {
+        if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (e) {}
+    return {};
+}
+
+function saveTrackerData(file, data) {
+    try { fs.writeFileSync(file, JSON.stringify(data, null, 2)); } catch (e) { console.error('Tracker save error:', e.message); }
+}
+
+let inviteData = loadTrackerData(TRACKER_FILES.invites);   // { guildId: { userId: { invites, username } } }
+let messageData = loadTrackerData(TRACKER_FILES.messages); // { guildId: { userId: { messages, username } } }
+const inviteCache = new Map(); // guildId -> Map<code, uses>
+
+// ==================== END TRACKER INIT ====================
+
 // Load or initialize data
 const reactionRoles = new Map(
     Object.entries(
@@ -1524,6 +1547,15 @@ client.on("ready", async () => {
         console.error("Error stack:", error.stack);
         reactionRoles.clear();
     }
+
+    // Cache all guild invites for invite tracking
+    for (const guild of client.guilds.cache.values()) {
+        try {
+            const invites = await guild.invites.fetch();
+            inviteCache.set(guild.id, new Map(invites.map(inv => [inv.code, inv.uses])));
+        } catch (e) { /* bot may lack MANAGE_GUILD permission in some servers */ }
+    }
+    console.log(`Invite cache loaded for ${inviteCache.size} guild(s).`);
 });
 
 // Import ticket system
@@ -1775,6 +1807,23 @@ client.on("guildMemberAdd", async (member) => {
                 break;
         }
     }
+
+    // Invite tracking — detect which invite was used
+    try {
+        const cachedInvites = inviteCache.get(member.guild.id) || new Map();
+        const newInvites = await member.guild.invites.fetch();
+        const usedInvite = newInvites.find(inv => (cachedInvites.get(inv.code) ?? 0) < inv.uses);
+        inviteCache.set(member.guild.id, new Map(newInvites.map(inv => [inv.code, inv.uses])));
+        if (usedInvite?.inviter) {
+            const gid = member.guild.id;
+            const uid = usedInvite.inviter.id;
+            if (!inviteData[gid]) inviteData[gid] = {};
+            if (!inviteData[gid][uid]) inviteData[gid][uid] = { invites: 0, username: usedInvite.inviter.username };
+            inviteData[gid][uid].invites++;
+            inviteData[gid][uid].username = usedInvite.inviter.username;
+            saveTrackerData(TRACKER_FILES.invites, inviteData);
+        }
+    } catch (e) { console.error('Invite tracking error on join:', e.message); }
 });
 
 client.on("guildMemberRemove", async (member) => {
@@ -1858,6 +1907,17 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
             }
         }
     }
+});
+
+// Update invite cache when new invites are created or deleted
+client.on("inviteCreate", invite => {
+    const guildInvites = inviteCache.get(invite.guild.id);
+    if (guildInvites) guildInvites.set(invite.code, invite.uses ?? 0);
+});
+
+client.on("inviteDelete", invite => {
+    const guildInvites = inviteCache.get(invite.guild.id);
+    if (guildInvites) guildInvites.delete(invite.code);
 });
 
 client.on("messageReactionAdd", async (reaction, user) => {
@@ -2048,6 +2108,17 @@ const lastMessageTime = new Map();
 
 client.on("messageCreate", async (message) => {
     if (!message.guild || message.author.bot) return;
+
+    // Message tracking
+    {
+        const gid = message.guild.id;
+        const uid = message.author.id;
+        if (!messageData[gid]) messageData[gid] = {};
+        if (!messageData[gid][uid]) messageData[gid][uid] = { messages: 0, username: message.author.username };
+        messageData[gid][uid].messages++;
+        messageData[gid][uid].username = message.author.username;
+        if (messageData[gid][uid].messages % 10 === 0) saveTrackerData(TRACKER_FILES.messages, messageData);
+    }
 
     // Apply content filtering first
     const wasFiltered = await filterMessage(message);
@@ -3113,11 +3184,6 @@ client.on("messageCreate", async (message) => {
 
                     case "leaderboard": {
                         try {
-                            const dir = path.join(__dirname, "data");
-                            if (!fs.existsSync(dir)) {
-                                fs.mkdirSync(dir, { recursive: true });
-                            }
-
                             let userLevelsData = {};
                             try {
                                 userLevelsData = JSON.parse(
@@ -3189,6 +3255,122 @@ client.on("messageCreate", async (message) => {
                             await message.reply(
                                 "Error displaying leaderboard. Please try again later.",
                             );
+                        }
+                        break;
+                    }
+
+                    // ==================== INVITE TRACKER COMMANDS ====================
+                    case "invites": {
+                        const target = message.mentions.users.first() || message.author;
+                        const gid = message.guild.id;
+                        const count = inviteData[gid]?.[target.id]?.invites || 0;
+                        const embed = new discord_js_1.EmbedBuilder()
+                            .setTitle(`📨 Invites — ${target.username}`)
+                            .setDescription(`**${target}** has invited **${count}** member${count !== 1 ? 's' : ''} to this server.`)
+                            .setThumbnail(target.displayAvatarURL())
+                            .setColor('#5865F2')
+                            .setTimestamp();
+                        await message.reply({ embeds: [embed] });
+                        break;
+                    }
+
+                    case "invitelb": {
+                        const gid = message.guild.id;
+                        const guildInvites = inviteData[gid] || {};
+                        const sorted = Object.entries(guildInvites)
+                            .sort(([, a], [, b]) => b.invites - a.invites)
+                            .slice(0, 10);
+                        if (sorted.length === 0) {
+                            await message.reply('No invite data recorded yet.');
+                            break;
+                        }
+                        const lines = sorted.map(([uid, d], i) =>
+                            `**${i + 1}.** <@${uid}> — **${d.invites}** invite${d.invites !== 1 ? 's' : ''}`
+                        );
+                        const embed = new discord_js_1.EmbedBuilder()
+                            .setTitle('📨 Invite Leaderboard')
+                            .setDescription(lines.join('\n'))
+                            .setColor('#5865F2')
+                            .setTimestamp();
+                        await message.reply({ embeds: [embed] });
+                        break;
+                    }
+
+                    case "resetinvites": {
+                        if (!isOwner(message.author.id)) {
+                            await message.reply('❌ Only server owners can reset invite counts.');
+                            break;
+                        }
+                        const gid = message.guild.id;
+                        const target = message.mentions.users.first();
+                        if (args[0] === 'all') {
+                            inviteData[gid] = {};
+                            saveTrackerData(TRACKER_FILES.invites, inviteData);
+                            await message.reply('✅ All invite counts have been reset.');
+                        } else if (target) {
+                            if (inviteData[gid]?.[target.id]) inviteData[gid][target.id].invites = 0;
+                            saveTrackerData(TRACKER_FILES.invites, inviteData);
+                            await message.reply(`✅ Invite count for ${target} has been reset.`);
+                        } else {
+                            await message.reply('Usage: `!resetinvites @user` or `!resetinvites all`');
+                        }
+                        break;
+                    }
+
+                    // ==================== MESSAGE TRACKER COMMANDS ====================
+                    case "messages": {
+                        const target = message.mentions.users.first() || message.author;
+                        const gid = message.guild.id;
+                        const count = messageData[gid]?.[target.id]?.messages || 0;
+                        const embed = new discord_js_1.EmbedBuilder()
+                            .setTitle(`💬 Messages — ${target.username}`)
+                            .setDescription(`**${target}** has sent **${count}** message${count !== 1 ? 's' : ''} in this server.`)
+                            .setThumbnail(target.displayAvatarURL())
+                            .setColor('#5865F2')
+                            .setTimestamp();
+                        await message.reply({ embeds: [embed] });
+                        break;
+                    }
+
+                    case "msglb": {
+                        const gid = message.guild.id;
+                        const guildMsgs = messageData[gid] || {};
+                        const sorted = Object.entries(guildMsgs)
+                            .sort(([, a], [, b]) => b.messages - a.messages)
+                            .slice(0, 10);
+                        if (sorted.length === 0) {
+                            await message.reply('No message data recorded yet.');
+                            break;
+                        }
+                        const lines = sorted.map(([uid, d], i) =>
+                            `**${i + 1}.** <@${uid}> — **${d.messages}** message${d.messages !== 1 ? 's' : ''}`
+                        );
+                        const embed = new discord_js_1.EmbedBuilder()
+                            .setTitle('💬 Message Leaderboard')
+                            .setDescription(lines.join('\n'))
+                            .setColor('#5865F2')
+                            .setTimestamp();
+                        await message.reply({ embeds: [embed] });
+                        break;
+                    }
+
+                    case "resetmsgs": {
+                        if (!isOwner(message.author.id)) {
+                            await message.reply('❌ Only server owners can reset message counts.');
+                            break;
+                        }
+                        const gid = message.guild.id;
+                        const target = message.mentions.users.first();
+                        if (args[0] === 'all') {
+                            messageData[gid] = {};
+                            saveTrackerData(TRACKER_FILES.messages, messageData);
+                            await message.reply('✅ All message counts have been reset.');
+                        } else if (target) {
+                            if (messageData[gid]?.[target.id]) messageData[gid][target.id].messages = 0;
+                            saveTrackerData(TRACKER_FILES.messages, messageData);
+                            await message.reply(`✅ Message count for ${target} has been reset.`);
+                        } else {
+                            await message.reply('Usage: `!resetmsgs @user` or `!resetmsgs all`');
                         }
                         break;
                     }
